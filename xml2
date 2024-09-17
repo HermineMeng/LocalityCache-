@@ -1,0 +1,101 @@
+<?xml version='1.0' encoding='utf-8'?>
+<AZs>
+	<AZ id="0" proxy="10.0.0.2:50005">
+		<datanodes>
+			<datanode uri="10.0.0.2:9000" />
+			<datanode uri="10.0.0.2:9001" />
+			<datanode uri="10.0.0.2:9002" />
+			<datanode uri="10.0.0.2:9003" />
+			<datanode uri="10.0.0.2:9004" />
+			<datanode uri="10.0.0.2:9005" />
+			<datanode uri="10.0.0.2:9006" />
+			<datanode uri="10.0.0.2:9007" />
+			<datanode uri="10.0.0.2:9008" />
+			<datanode uri="10.0.0.2:9009" />
+		</datanodes>
+		<cachenodes>
+			<cachenode uri="10.0.0.2:9010" />
+			<cachenode uri="10.0.0.2:9011" />
+		</cachenodes>
+	</AZ>
+	<AZ id="1" proxy="10.0.0.3:50015">
+		<datanodes>
+			<datanode uri="10.0.0.3:9100" />
+			<datanode uri="10.0.0.3:9101" />
+			<datanode uri="10.0.0.3:9102" />
+			<datanode uri="10.0.0.3:9103" />
+			<datanode uri="10.0.0.3:9104" />
+			<datanode uri="10.0.0.3:9105" />
+			<datanode uri="10.0.0.3:9106" />
+			<datanode uri="10.0.0.3:9107" />
+			<datanode uri="10.0.0.3:9108" />
+			<datanode uri="10.0.0.3:9109" />
+		</datanodes>
+		<cachenodes>
+			<cachenode uri="10.0.0.3:9110" />
+			<cachenode uri="10.0.0.3:9111" />
+		</cachenodes>
+	</AZ>
+	<AZ id="2" proxy="10.0.0.5:50025">
+		<datanodes>
+			<datanode uri="10.0.0.5:9200" />
+			<datanode uri="10.0.0.5:9201" />
+			<datanode uri="10.0.0.5:9202" />
+			<datanode uri="10.0.0.5:9203" />
+			<datanode uri="10.0.0.5:9204" />
+			<datanode uri="10.0.0.5:9205" />
+			<datanode uri="10.0.0.5:9206" />
+			<datanode uri="10.0.0.5:9207" />
+			<datanode uri="10.0.0.5:9208" />
+			<datanode uri="10.0.0.5:9209" />
+		</datanodes>
+		<cachenodes>
+			<cachenode uri="10.0.0.5:9210" />
+			<cachenode uri="10.0.0.5:9211" />
+		</cachenodes>
+	</AZ>
+	<AZ id="3" proxy="10.0.0.6:50035">
+		<datanodes>
+			<datanode uri="10.0.0.6:9300" />
+			<datanode uri="10.0.0.6:9301" />
+			<datanode uri="10.0.0.6:9302" />
+			<datanode uri="10.0.0.6:9303" />
+			<datanode uri="10.0.0.6:9304" />
+			<datanode uri="10.0.0.6:9305" />
+			<datanode uri="10.0.0.6:9306" />
+			<datanode uri="10.0.0.6:9307" />
+			<datanode uri="10.0.0.6:9308" />
+			<datanode uri="10.0.0.6:9309" />
+		</datanodes>
+		<cachenodes>
+			<cachenode uri="10.0.0.6:9310" />
+			<cachenode uri="10.0.0.6:9311" />
+		</cachenodes>
+	</AZ>
+	<AZ id="4" proxy="10.0.0.8:50045">
+		<datanodes>
+			<datanode uri="10.0.0.8:9400" />
+			<datanode uri="10.0.0.8:9401" />
+			<datanode uri="10.0.0.8:9402" />
+			<datanode uri="10.0.0.8:9403" />
+			<datanode uri="10.0.0.8:9404" />
+			<datanode uri="10.0.0.8:9405" />
+			<datanode uri="10.0.0.8:9406" />
+			<datanode uri="10.0.0.8:9407" />
+			<datanode uri="10.0.0.8:9408" />
+			<datanode uri="10.0.0.8:9409" />
+		</datanodes>
+		<cachenodes>
+			<cachenode uri="10.0.0.8:9410" />
+			<cachenode uri="10.0.0.8:9411" />
+		</cachenodes>
+	</AZ>
+	<AZ id="5" proxy="10.0.0.9:50055">
+		<datanodes>
+			<datanode uri="10.0.0.9:9500" />
+		</datanodes>
+		<cachenodes>
+			<cachenode uri="10.0.0.9:9510" />
+		</cachenodes>
+	</AZ>
+</AZs>

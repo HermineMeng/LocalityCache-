@@ -16,6 +16,7 @@ public:
   void decode_and_transfer_data(placement_info placement);
   void decode_and_transfer_data_concurrence(placement_info placement);
   void decode_and_transfer_data_CACHED(placement_info placement);
+  void decode_and_transfer_data_baseline(placement_info placement);
   /*利用cache node直接读取恢复*/
   void cache_repair(main_repair_plan repair_plan);
   void main_repair(main_repair_plan repair_plan);

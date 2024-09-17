@@ -15,8 +15,9 @@ Datanode::Datanode(std::string ip, int port)
   // port是datanode的地址,port + 1000是redis的地址
   std::string url = "tcp://" + ip_ + ":" + std::to_string(port_ + 1000);
   redis_ = std::make_unique<sw::redis::Redis>(url);
-  filename="/home/cxm/cacheproject/happylrc/jsonout/"+ ip_ + std::to_string(port_) +"data.json";
-  file_.open(filename, std::ios::app | std::ios::in | std::ios::binary);
+  filename="/home/chenximeng/cacheproject/happylrc/jsonout/"+ ip_ + std::to_string(port_) +"data.json";
+  //file_.open(filename, std::ios::app | std::ios::in | std::ios::binary);
+  file_.open(filename, std::ios::in | std::ios::out | std::ios::trunc | std::ios::binary);
   cur_offset_ = 0;
 }
 

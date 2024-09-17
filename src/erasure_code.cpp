@@ -94,6 +94,8 @@ bool decode(int k, int g, int real_l, char **data, char **coding,
 
 bool check_received_block(int k, int expect_block_number, 
                           std::shared_ptr<std::vector<int>> blocks_idx_ptr, int blocks_ptr_size){
+
+  
   if (blocks_ptr_size != -1){
     if (int(blocks_idx_ptr->size()) != blocks_ptr_size){
       return false;
@@ -114,6 +116,7 @@ bool check_received_block(int k, int expect_block_number,
   }
   
   return true;
+  
 }
 
 

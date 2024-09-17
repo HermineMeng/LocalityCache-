@@ -3,8 +3,13 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <fstream>
+#include <chrono>
 #include <string>
 #include <vector>
+#include <unistd.h>
+using namespace std;
+using namespace chrono;
 
 int main(int argc, char **argv) {
   std::vector<std::string> args;
@@ -45,7 +50,7 @@ int main(int argc, char **argv) {
 
   // 如果部署在集群上, 一定要将client ip地址设置为1个实际的IP地址, 而非"0.0.0.0"
   // 因为这个IP地址会被proxy使用
-  Client client("0.0.0.0", CLIENT_TRANSFER_DATA_PORT, "0.0.0.0",
+  Client client("100.0.0.4", CLIENT_TRANSFER_DATA_PORT, "100.0.0.4",
                 COORDINATOR_RPC_PORT);
 
   client.set_ec_parameter(ec_schema);
@@ -60,25 +65,58 @@ int main(int argc, char **argv) {
     client.set(kv.first, kv.second);
   }
   
-  
+  /*
   // datanode的数量, 每个节点都修1次
-  unsigned int num_of_nodes = 100;
-  for (unsigned int i = 0; i < num_of_nodes; i++) {
+  int num_of_times = 10;
+  unsigned int num_of_nodes = 51;
+  auto start = system_clock::now();
+  for(int times = 0; times < num_of_times; times++){
+    std::cout << "round ********** " << times << std::endl;
+    for (unsigned int i = 0; i < num_of_nodes; i++) {
     
-    std::cout << "repair node " << i << std::endl;
-    client.repair({i});
+      std::cout << "repair node " << i << std::endl;
+      client.repair({i});
+    }
   }
+  auto end = system_clock::now();
   
-  
-  //sleep(5);
+  auto duration = duration_cast<microseconds>(end - start);
+  double time_cost = double(duration.count()) * microseconds::period::num / microseconds::period::den;
+  std::cout << time_cost << "秒" << std::endl;
+  string test_result_file = "/home/chenximeng/cacheproject/test5.result";
+  ofstream fout(test_result_file, std::ios::app);
+  fout <<  "时间开销：" << time_cost / num_of_times << "秒" << std::endl;
+  double block_size = (double)(value_length ) / (double) ec_schema.k;
+  std::cout << block_size << "B" << std::endl;
+  double repair_speed = (double)num_of_kv_pairs * (double)(ec_schema.k + ec_schema.real_l + ec_schema.g) * (double)((double)block_size / 1024 /1024) / time_cost;
+  fout <<  "修复速度：" << repair_speed * num_of_times << "MB/秒" << endl;
+  */
 
   
-  for (auto &kv : key_value) {
-    std::cout << "get kv: " << kv.first << std::endl;
-    auto stored_value = client.get(kv.first);
-    my_assert(stored_value == kv.second);
+  sleep(5);
+  int num_of_times = 10;
+  auto start = system_clock::now();
+  for(int times = 0; times < num_of_times; times++){
+    std::cout << "round ********** " << times << std::endl;
+    for (auto &kv : key_value) {
+      std::cout << "get kv: " << kv.first << std::endl;
+      auto stored_value = client.get(kv.first);
+      my_assert(stored_value == kv.second);
+    }
   }
   
+  auto end = system_clock::now();
+  
+  
+  auto duration = duration_cast<microseconds>(end - start);
+  double time_cost = double(duration.count()) * microseconds::period::num / microseconds::period::den;
+  std::cout << time_cost << "秒" << std::endl;
+  string test_result_file = "/home/chenximeng/cacheproject/testbu1.result";
+  ofstream fout(test_result_file, std::ios::app);
+  fout <<  "时间开销：" << time_cost / num_of_times << "秒" << std::endl;
+  std::cout << time_cost / num_of_times << "秒" << std::endl;
+  //fout <<  "单对象时间：" << time_cost / num_of_kv_pairs << "秒" << endl;
+  //std::cout << time_cost / num_of_kv_pairs << "秒" << std::endl;
   
   
 

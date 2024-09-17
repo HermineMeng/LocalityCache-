@@ -219,7 +219,8 @@ std::pair<std::string, int> Coordinator::get_proxy_location(std::string key,
 
 
   std::pair<std::string, int> proxy_location;
-  unsigned int selected_cluster_id = random_index(cluster_info_.size());
+  //避开最后一个cluster
+  unsigned int selected_cluster_id = random_index(cluster_info_.size()-1);
   std::string selected_proxy_ip = cluster_info_[selected_cluster_id].proxy_ip;
   int selected_proxy_port = cluster_info_[selected_cluster_id].proxy_port;
   proxy_location = {selected_proxy_ip, selected_proxy_port};
@@ -277,6 +278,31 @@ void Coordinator::generate_placement_plan(std::vector<unsigned int> &nodes,
         cluster_id = node_info_[node_id].cluster_id;
         space_upper = g + help[cluster_id].first.size();
       } while (visited_nodes[node_id] == true ||
+               help[cluster_id].second == space_upper || node_id == 50);
+
+      my_assert(help[cluster_id].second < space_upper);
+      my_assert(visited_nodes[node_id] == false);
+
+      nodes.push_back(node_id);
+      node_info_[node_id].stripe_ids.insert(stripe_id);
+      visited_nodes[node_id] = true;
+      help[cluster_id].second++;
+
+      return cluster_id;
+    };  
+  
+    auto find_specific_node_for_a_block = [&, this]() {
+      node_id = 50;
+      cluster_id = node_info_[node_id].cluster_id;
+      my_assert(cluster_id == 5);
+      nodes.push_back(node_id);
+      node_info_[node_id].stripe_ids.insert(stripe_id);
+      /*
+      do {
+        node_id = dis(gen);
+        cluster_id = node_info_[node_id].cluster_id;
+        space_upper = g + help[cluster_id].first.size();
+      } while (visited_nodes[node_id] == true ||
                help[cluster_id].second == space_upper);
 
       my_assert(help[cluster_id].second < space_upper);
@@ -286,6 +312,7 @@ void Coordinator::generate_placement_plan(std::vector<unsigned int> &nodes,
       node_info_[node_id].stripe_ids.insert(stripe_id);
       visited_nodes[node_id] = true;
       help[cluster_id].second++;
+      */
 
       return cluster_id;
     };  
@@ -299,13 +326,15 @@ void Coordinator::generate_placement_plan(std::vector<unsigned int> &nodes,
       std::uniform_int_distribution<unsigned int> dis_cache_node(
           0, cluster.cache_nodes.size() - 1);
       int cache_node_idx;
+      /*
       do {
         cache_node_idx = dis_cache_node(gen_node);       
-        /*cache_node没有单簇容错的要求*/
+        //cache_node没有单簇容错的要求
         //space_upper = g + help[cluster_id].first.size();
       } while (visited_cache_nodes[cluster.cache_nodes[cache_node_idx]] == true );
-      
-      visited_cache_nodes[cluster.cache_nodes[cache_node_idx]] = true;
+      */
+      cache_node_idx = dis_cache_node(gen_node); 
+      //visited_cache_nodes[cluster.cache_nodes[cache_node_idx]] = true;
       /*cache_node_id=cluster.cache_nodes[cache_node_idx];*/
       cache_nodes.push_back(cluster.cache_nodes[cache_node_idx]);
       cache_node_info_[cluster.cache_nodes[cache_node_idx]].stripe_ids.insert(stripe_id);
@@ -315,9 +344,18 @@ void Coordinator::generate_placement_plan(std::vector<unsigned int> &nodes,
     // 数据块
     for (int i = 0; i < real_l; i++) {
       for (int j = 0; j < b; j++) {
+        if( (i == 1 && j == 1) || (i == 1 && j == 0)){
+          /*|| (i == 1 && j == 0)*/
+          unsigned int cluster_id = find_specific_node_for_a_block();
+          help[cluster_id].first.insert(i);
+        }else{
+          unsigned int cluster_id = find_a_node_for_a_block();
+          help[cluster_id].first.insert(i);
+        }
+        /*
         unsigned int cluster_id = find_a_node_for_a_block();
         help[cluster_id].first.insert(i);
-        /*虽然data block不写入cache node，但是为了保证*/
+        */
       }
     }
 
@@ -326,9 +364,11 @@ void Coordinator::generate_placement_plan(std::vector<unsigned int> &nodes,
     for (int i = 0; i < g; i++) {
       unsigned int cluster_id = find_a_node_for_a_block();
       /*任选一个× 选择最后一个√ global parity插入本cluster中的cache_node*/
-      if(i== g-1){
+      
+      if(i== (g-1)){
         find_a_cache_node_for_a_block(cluster_id);
       }
+      
     }
 
     // 局部校验块
@@ -463,13 +503,15 @@ size_t Coordinator::ask_for_data(std::string key, std::string client_ip,
   placement.client_ip = client_ip;
   placement.client_port = client_port;
   
-  int selected_proxy_id = random_index(cluster_info_.size());
+  //避开最后一个受限的集群
+  int selected_proxy_id = random_index(cluster_info_.size()-1);
   std::string location =
       cluster_info_[selected_proxy_id].proxy_ip +
       std::to_string(cluster_info_[selected_proxy_id].proxy_port);
   /*****************************************************************/
+  std::cout << location<< std::endl;
   async_simple::coro::syncAwait(
-      proxys_[location]->call<&Proxy::decode_and_transfer_data_concurrence>(placement));
+      proxys_[location]->call<&Proxy::decode_and_transfer_data_baseline>(placement));
   /*返回的是value_len，用于buf_size*/
   return object.value_len;
 }
@@ -498,7 +540,7 @@ void Coordinator::ask_for_repair(std::vector<unsigned int> failed_node_ids) {
     my_assert(failed_block_indexes.size() == 1);
 
     if (stripe_info_[stripe_id].encode_type == Encode_Type::Azure_LRC) {
-      do_repair_CACHED(stripe_id, {failed_block_indexes[0]});
+      do_repair(stripe_id, {failed_block_indexes[0]});
     }
   }
 }
@@ -506,7 +548,7 @@ void Coordinator::ask_for_repair(std::vector<unsigned int> failed_node_ids) {
 ////////////////////////////////////////////////////
 ///////////////new do_repair
 ////////////////////////////////////////////////////
-//////////////////////do_repair新
+//////////////////////do_repair
 void Coordinator::do_repair_CACHED(unsigned int stripe_id,
                             std::vector<int> failed_block_indexes) {
   my_assert(failed_block_indexes.size() == 1);

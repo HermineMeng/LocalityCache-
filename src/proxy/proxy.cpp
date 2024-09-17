@@ -2,8 +2,12 @@
 #include "../../include/coordinator.h"
 #include "../../include/erasure_code.h"
 #include <string>
+#include <chrono>
 #include <thread>
+#include <fstream>
 #include <unordered_map>
+using namespace std;
+using namespace chrono;
 
 Proxy::Proxy(std::string ip, int port)
     : ip_(ip), port_for_rpc_(port + 1000), port_for_transfer_data_(port),
@@ -15,6 +19,7 @@ Proxy::Proxy(std::string ip, int port)
   rpc_server_->register_handler<&Proxy::decode_and_transfer_data>(this);
   rpc_server_->register_handler<&Proxy::decode_and_transfer_data_concurrence>(this);
   rpc_server_->register_handler<&Proxy::decode_and_transfer_data_CACHED>(this);
+   rpc_server_->register_handler<&Proxy::decode_and_transfer_data_baseline>(this);
   rpc_server_->register_handler<&Proxy::cache_repair>(this);
   rpc_server_->register_handler<&Proxy::main_repair>(this);
   rpc_server_->register_handler<&Proxy::help_repair>(this);
@@ -98,6 +103,8 @@ void Proxy::start_encode_and_store_object(placement_info placement) {
         if( j >= k + g - 1){
           ip_and_port_of_cachenode =
             placement.cachenode_ip_port[i * (1 + real_l) + (j - (k + g -1 ))];
+          //ip_and_port_of_cachenode =
+            //placement.cachenode_ip_port[i *  real_l + (j - (k + g ))];
         }
 
         writers.push_back(
@@ -224,6 +231,9 @@ void Proxy::decode_and_transfer_data_concurrence(placement_info placement){
   auto decode_and_transfer = [this, placement](){
     std::string object_value;
     for (auto i = 0; i < placement.stripe_ids.size(); i++) {
+      /*测时间0*/
+      //auto start0 = system_clock::now();
+
       unsigned int stripe_id = placement.stripe_ids[i];
       auto blocks_ptr =
           std::make_shared<std::vector<std::vector<char>>>();
@@ -231,7 +241,430 @@ void Proxy::decode_and_transfer_data_concurrence(placement_info placement){
           std::make_shared<std::vector<int>>();
       auto myLock_ptr = std::make_shared<std::mutex>();
       auto cv_ptr = std::make_shared<std::condition_variable>();
-      int expect_block_number = placement.k + placement.real_l -1;
+      int expect_block_number = placement.k + placement.real_l - 1;
+      int all_expect_blocks = placement.k + placement.g +placement.real_l ;
+
+      size_t cur_block_size;
+      if ((i == placement.stripe_ids.size() - 1) &&
+          placement.tail_block_size != -1) {
+        cur_block_size = placement.tail_block_size;
+      } else {
+        cur_block_size = placement.block_size;
+      }
+      my_assert(cur_block_size > 0);
+
+      std::vector<char *> data_v(placement.k);
+      std::vector<char *> coding_v(all_expect_blocks - placement.k);
+      char **data = (char **)data_v.data();
+      char **coding = (char **)coding_v.data();
+      int k = placement.k;
+      int g = placement.g;
+      int real_l = placement.real_l;
+
+      ////////////////////////////////////////////////////////////////////////////////////
+      std::vector<std::vector<char>> space_for_data_blocks(k, std::vector<char>(cur_block_size));
+      std::vector<std::vector<char>> space_for_parity_blocks(all_expect_blocks - k , std::vector<char>(cur_block_size));
+      for (int j = 0; j < k; j++) {
+        data[j] = space_for_data_blocks[j].data();
+      }
+      for (int j = 0; j < all_expect_blocks - k; j++) {
+        coding[j] = space_for_parity_blocks[j].data();
+      }
+
+      /////////////////////////////////////////////////////////////////////////////////////
+      int num_of_blocks_each_stripe =
+          placement.k + placement.g + placement.real_l;
+      std::vector<std::thread> readers;
+
+      /*测时间1*/
+      //auto read_start1 = system_clock::now();
+
+
+      auto getFromNode=[this, k, g, blocks_ptr, blocks_idx_ptr, myLock_ptr, cv_ptr]
+      (int expect_block_number, int stripe_id, int block_idx, int cur_block_size, std::string ip, int port )
+      {
+        std::string block_id = std::to_string(stripe_id * 1000 + block_idx);
+        std::vector<char> block(cur_block_size);
+        /*测时间*/
+        //auto start = system_clock::now();
+
+        /*read_from_datanode(block_id.c_str(), block_id.size(), 
+                           block.data(), cur_block_size, ip.c_str(), port);*/
+        if( block_idx < k + g - 1){
+          read_from_datanode(block_id.c_str(), block_id.size(),
+                            block.data(), cur_block_size, ip.c_str(), port);
+        }else{
+          read_from_cachenode(block_id.c_str(), block_id.size(),
+                              block.data(), cur_block_size, ip.c_str(), port);
+        }
+        ///////////////////////////////////////////
+        std::cout<<"read success"<<std::endl;
+
+        myLock_ptr->lock();
+
+        if (!check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
+          blocks_ptr->push_back(block);
+          blocks_idx_ptr->push_back(block_idx);
+          if (check_received_block(k, expect_block_number,blocks_idx_ptr, blocks_ptr->size())){
+            cv_ptr->notify_all();
+          }
+          // 检查已有的块是否满足要求
+        }
+        myLock_ptr->unlock();
+        /*测时间*/
+        /*
+        auto end = system_clock::now();
+        auto duration = duration_cast<microseconds>(end - start);
+        double time_cost = double(duration.count()) * microseconds::period::num / microseconds::period::den;
+        string test_result_file = "/home/chenximeng/cacheproject/record.log";
+        ofstream fout(test_result_file, std::ios::app);
+        fout <<  "Thread " << block_idx << " completed in " << time_cost << "秒" << std::endl;
+        std::cout << "Thread " << block_idx << " completed in " << time_cost << "秒" << std::endl;
+        */
+      };
+
+      
+      for (int j = 0; j < all_expect_blocks; j++) {
+        
+        if (j >= k && j < (k+g-1) ){
+            continue;
+        }
+        
+        std::pair<std::string, int> ip_and_port_of_datanode =
+            placement.datanode_ip_port[i * num_of_blocks_each_stripe + j];
+        /*readers.push_back(
+            std::thread(getFromNode, expect_block_number, stripe_id, j, 
+                        cur_block_size, ip_and_port_of_datanode.first, ip_and_port_of_datanode.second));*/
+        std::pair<std::string, int> ip_and_port_of_cachenode;
+        /*获取cachenode信息*/
+        if( j >= k + g - 1){
+          ip_and_port_of_cachenode = placement.cachenode_ip_port[i * (1 + real_l) + (j - (k + g -1 ))];
+          //ip_and_port_of_cachenode =
+            //placement.cachenode_ip_port[i *  real_l + (j - (k + g ))];
+        }
+        
+        if( j < k + g - 1 ){
+          readers.push_back(
+            std::thread(getFromNode, expect_block_number, stripe_id, j, cur_block_size, 
+                        ip_and_port_of_datanode.first, ip_and_port_of_datanode.second));
+        } else{
+          readers.push_back(
+            std::thread(getFromNode, expect_block_number, stripe_id, j, cur_block_size, 
+                        ip_and_port_of_cachenode.first, ip_and_port_of_cachenode.second));
+        }                   
+      }
+      for (auto j = 0; j < readers.size(); j++) {
+        readers[j].detach();
+      }
+
+      std::unique_lock<std::mutex> lck(*myLock_ptr);
+
+      while(!check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
+        cv_ptr->wait(lck);
+      }
+
+      /*测时间2*/      
+      //auto read_end2 = system_clock::now();
+      
+
+      for(int j = 0; j < int(blocks_idx_ptr->size()); j++){
+        int idx = (*blocks_idx_ptr)[j];
+        if (idx < k){
+          data[idx] = (*blocks_ptr)[j].data();
+          //memcpy(data[idx], (*blocks_ptr)[j].data(), cur_block_size);
+        }else{
+          coding[idx - k] = (*blocks_ptr)[j].data();
+          //memcpy(coding[idx - k], (*blocks_ptr)[j].data(), cur_block_size);
+        }
+
+      }
+
+      auto erasures = std::make_shared<std::vector<int>>();
+      for (int j = 0; j < all_expect_blocks; j++){
+        if (std::find(blocks_idx_ptr->begin(), blocks_idx_ptr->end(), j) == blocks_idx_ptr->end()){
+          erasures->push_back(j);
+        }
+      }
+      erasures->push_back(-1);
+
+      /*bool ret = decode(k, g, real_l, data, coding, erasures, cur_block_size);
+      if(!ret){
+        std::cout << "cannot decode!" << std::endl;
+      }*/
+      if (!decode(k, g, real_l, data, coding, erasures, cur_block_size)){
+        std::cout << "cannot decode!" << std::endl;
+      }
+
+      for (int j = 0; j < k; j++){
+        object_value += std::string(data[j], cur_block_size);
+      }
+           
+      /*测时间*/      
+      //auto decode3 = system_clock::now();
+      /*
+      auto read_duration0 = duration_cast<microseconds>(read_start1 - start0);
+      auto read_duration1 = duration_cast<microseconds>(read_end2 - read_start1);
+      auto read_duration2 = duration_cast<microseconds>(decode3 - read_end2);
+      auto read_duration3 = duration_cast<microseconds>(decode3 - start0);
+      double read_time_cost0 = double(read_duration0.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost1 = double(read_duration1.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost2 = double(read_duration2.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost3 = double(read_duration3.count()) * microseconds::period::num / microseconds::period::den;
+      string test_result_file = "/home/chenximeng/cacheproject/record2.log";
+      ofstream fout(test_result_file, std::ios::app);
+      fout << std::endl;
+      fout <<  "read_duration0 " << read_time_cost0 << "秒" << " " <<  "read_duration1 " << read_time_cost1 << "秒" << " " <<  "read_duration2 " << read_time_cost2 << "秒" << " " <<  "read_duration3 " << read_time_cost3 << "秒" << std::endl;
+      */    
+    }
+
+    asio::ip::tcp::socket peer(io_context_);
+    asio::ip::tcp::endpoint endpoint(
+        asio::ip::make_address(placement.client_ip), placement.client_port);
+    peer.connect(endpoint);
+
+    asio::write(peer, asio::buffer(placement.key, placement.key.size()));
+    asio::write(peer, asio::buffer(object_value, object_value.size()));
+
+    asio::error_code ignore_ec;
+    peer.shutdown(asio::ip::tcp::socket::shutdown_both, ignore_ec);
+    peer.close(ignore_ec);
+
+
+  };
+
+
+
+  std::thread new_thread(decode_and_transfer);
+  new_thread.detach();
+}
+
+
+///////////新增的baseline
+void Proxy::decode_and_transfer_data_baseline(placement_info placement){
+  auto decode_and_transfer = [this, placement](){
+    std::string object_value;
+    for (auto i = 0; i < placement.stripe_ids.size(); i++) {
+      /*测时间0*/
+      //auto start0 = system_clock::now();
+
+      unsigned int stripe_id = placement.stripe_ids[i];
+      auto blocks_ptr =
+          std::make_shared<std::vector<std::vector<char>>>();
+      auto blocks_idx_ptr =
+          std::make_shared<std::vector<int>>();
+      auto myLock_ptr = std::make_shared<std::mutex>();
+      auto cv_ptr = std::make_shared<std::condition_variable>();
+      int expect_block_number = placement.k + placement.real_l - 1;
+      int all_expect_blocks = placement.k + placement.g +placement.real_l ;
+
+      size_t cur_block_size;
+      if ((i == placement.stripe_ids.size() - 1) &&
+          placement.tail_block_size != -1) {
+        cur_block_size = placement.tail_block_size;
+      } else {
+        cur_block_size = placement.block_size;
+      }
+      my_assert(cur_block_size > 0);
+
+      std::vector<char *> data_v(placement.k);
+      std::vector<char *> coding_v(all_expect_blocks - placement.k);
+      char **data = (char **)data_v.data();
+      char **coding = (char **)coding_v.data();
+      int k = placement.k;
+      int g = placement.g;
+      int real_l = placement.real_l;
+
+      ////////////////////////////////////////////////////////////////////////////////////
+      std::vector<std::vector<char>> space_for_data_blocks(k, std::vector<char>(cur_block_size));
+      std::vector<std::vector<char>> space_for_parity_blocks(all_expect_blocks - k , std::vector<char>(cur_block_size));
+      for (int j = 0; j < k; j++) {
+        data[j] = space_for_data_blocks[j].data();
+      }
+      for (int j = 0; j < all_expect_blocks - k; j++) {
+        coding[j] = space_for_parity_blocks[j].data();
+      }
+
+      /////////////////////////////////////////////////////////////////////////////////////
+      int num_of_blocks_each_stripe =
+          placement.k + placement.g + placement.real_l;
+      std::vector<std::thread> readers;
+
+      /*测时间1*/
+      //auto read_start1 = system_clock::now();
+
+      auto getFromNode=[this, k, g, blocks_ptr, blocks_idx_ptr, myLock_ptr, cv_ptr]
+      (int expect_block_number, int stripe_id, int block_idx, int cur_block_size, std::string ip, int port )
+      {
+        std::string block_id = std::to_string(stripe_id * 1000 + block_idx);
+        std::vector<char> block(cur_block_size);
+        /*测时间*/
+        //auto start = system_clock::now();
+
+        read_from_datanode(block_id.c_str(), block_id.size(), 
+                           block.data(), cur_block_size, ip.c_str(), port);
+        /*
+        if( block_idx < k + g - 1){
+          read_from_datanode(block_id.c_str(), block_id.size(),
+                            block.data(), cur_block_size, ip.c_str(), port);
+        }else{
+          read_from_cachenode(block_id.c_str(), block_id.size(),
+                              block.data(), cur_block_size, ip.c_str(), port);
+        }
+        */
+        ///////////////////////////////////////////
+        std::cout<<"read success"<<std::endl;
+
+        myLock_ptr->lock();
+
+        if (!check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
+          blocks_ptr->push_back(block);
+          blocks_idx_ptr->push_back(block_idx);
+          if (check_received_block(k, expect_block_number,blocks_idx_ptr, blocks_ptr->size())){
+            cv_ptr->notify_all();
+          }
+          // 检查已有的块是否满足要求
+        }
+        myLock_ptr->unlock();
+        /*测时间*/
+        /*
+        auto end = system_clock::now();
+        auto duration = duration_cast<microseconds>(end - start);
+        double time_cost = double(duration.count()) * microseconds::period::num / microseconds::period::den;
+        string test_result_file = "/home/chenximeng/cacheproject/record.log";
+        ofstream fout(test_result_file, std::ios::app);
+        fout <<  "Thread " << block_idx << " completed in " << time_cost << "秒" << std::endl;
+        std::cout << "Thread " << block_idx << " completed in " << time_cost << "秒" << std::endl;
+        */
+      };
+     
+      for (int j = 0; j < all_expect_blocks; j++) {
+        
+        if (j >= k && j <= (k+g-1) ){
+            continue;
+        }
+        
+        std::pair<std::string, int> ip_and_port_of_datanode =
+            placement.datanode_ip_port[i * num_of_blocks_each_stripe + j];
+        readers.push_back(
+            std::thread(getFromNode, expect_block_number, stripe_id, j, 
+                        cur_block_size, ip_and_port_of_datanode.first, ip_and_port_of_datanode.second));
+
+        /*
+        std::pair<std::string, int> ip_and_port_of_cachenode;
+        //获取cachenode信息
+        if( j >= k + g - 1){
+          ip_and_port_of_cachenode = placement.cachenode_ip_port[i * (1 + real_l) + (j - (k + g -1 ))];
+          //ip_and_port_of_cachenode =
+            //placement.cachenode_ip_port[i *  real_l + (j - (k + g ))];
+        }
+        
+        if( j < k + g - 1 ){
+          readers.push_back(
+            std::thread(getFromNode, expect_block_number, stripe_id, j, cur_block_size, 
+                        ip_and_port_of_datanode.first, ip_and_port_of_datanode.second));
+        } else{
+          readers.push_back(
+            std::thread(getFromNode, expect_block_number, stripe_id, j, cur_block_size, 
+                        ip_and_port_of_cachenode.first, ip_and_port_of_cachenode.second));
+        }   
+        */                
+      }
+
+      for (auto j = 0; j < readers.size(); j++) {
+        readers[j].detach();
+      }
+
+      std::unique_lock<std::mutex> lck(*myLock_ptr);
+
+      while(!check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
+        cv_ptr->wait(lck);
+      }
+
+      /*测时间2*/      
+      //auto read_end2 = system_clock::now();     
+
+      for(int j = 0; j < int(blocks_idx_ptr->size()); j++){
+        int idx = (*blocks_idx_ptr)[j];
+        if (idx < k){
+          data[idx] = (*blocks_ptr)[j].data();
+          //memcpy(data[idx], (*blocks_ptr)[j].data(), cur_block_size);
+        }else{
+          coding[idx - k] = (*blocks_ptr)[j].data();
+          //memcpy(coding[idx - k], (*blocks_ptr)[j].data(), cur_block_size);
+        }
+      }
+
+      auto erasures = std::make_shared<std::vector<int>>();
+      for (int j = 0; j < all_expect_blocks; j++){
+        if (std::find(blocks_idx_ptr->begin(), blocks_idx_ptr->end(), j) == blocks_idx_ptr->end()){
+          erasures->push_back(j);
+        }
+      }
+      erasures->push_back(-1);
+
+      /*bool ret = decode(k, g, real_l, data, coding, erasures, cur_block_size);
+      if(!ret){
+        std::cout << "cannot decode!" << std::endl;
+      }*/
+      if (!decode(k, g, real_l, data, coding, erasures, cur_block_size)){
+        std::cout << "cannot decode!" << std::endl;
+      }
+
+      for (int j = 0; j < k; j++){
+        object_value += std::string(data[j], cur_block_size);
+      }
+           
+      /*测时间*/      
+      //auto decode3 = system_clock::now();
+      /*
+      auto read_duration0 = duration_cast<microseconds>(read_start1 - start0);
+      auto read_duration1 = duration_cast<microseconds>(read_end2 - read_start1);
+      auto read_duration2 = duration_cast<microseconds>(decode3 - read_end2);
+      auto read_duration3 = duration_cast<microseconds>(decode3 - start0);
+      double read_time_cost0 = double(read_duration0.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost1 = double(read_duration1.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost2 = double(read_duration2.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost3 = double(read_duration3.count()) * microseconds::period::num / microseconds::period::den;
+      string test_result_file = "/home/chenximeng/cacheproject/record2.log";
+      ofstream fout(test_result_file, std::ios::app);
+      fout << std::endl;
+      fout <<  "read_duration0 " << read_time_cost0 << "秒" << " " <<  "read_duration1 " << read_time_cost1 << "秒" << " " <<  "read_duration2 " << read_time_cost2 << "秒" << " " <<  "read_duration3 " << read_time_cost3 << "秒" << std::endl;
+      */    
+    }
+
+    asio::ip::tcp::socket peer(io_context_);
+    asio::ip::tcp::endpoint endpoint(
+        asio::ip::make_address(placement.client_ip), placement.client_port);
+    peer.connect(endpoint);
+
+    asio::write(peer, asio::buffer(placement.key, placement.key.size()));
+    asio::write(peer, asio::buffer(object_value, object_value.size()));
+
+    asio::error_code ignore_ec;
+    peer.shutdown(asio::ip::tcp::socket::shutdown_both, ignore_ec);
+    peer.close(ignore_ec);
+  };
+
+  std::thread new_thread(decode_and_transfer);
+  new_thread.detach();
+}
+
+
+
+/*并发读取k+cached(1+l)个块*/
+/*先不管read from cache 先复刻代码*/
+void Proxy::decode_and_transfer_data_CACHED(placement_info placement){
+  auto decode_and_transfer = [this, placement](){
+    std::string object_value;
+    for (auto i = 0; i < placement.stripe_ids.size(); i++) {
+      unsigned int stripe_id = placement.stripe_ids[i];
+      auto blocks_ptr =
+          std::make_shared<std::vector<std::vector<char>>>();
+      auto blocks_idx_ptr =
+          std::make_shared<std::vector<int>>();
+      auto myLock_ptr = std::make_shared<std::mutex>();
+      auto cv_ptr = std::make_shared<std::condition_variable>();
+      int expect_block_number = placement.k + placement.real_l - 1;
       int all_expect_blocks = placement.k + placement.g +placement.real_l ;
 
       size_t cur_block_size;
@@ -297,6 +730,11 @@ void Proxy::decode_and_transfer_data_concurrence(placement_info placement){
           placement.k + placement.g + placement.real_l;
       std::vector<std::thread> readers;
       for (int j = 0; j < all_expect_blocks; j++) {
+        /*
+        if (j >= k && j < (k+g-1) ){
+            continue;
+        }
+        */
         std::pair<std::string, int> ip_and_port_of_datanode =
             placement.datanode_ip_port[i * num_of_blocks_each_stripe + j];
         /*readers.push_back(
@@ -330,9 +768,11 @@ void Proxy::decode_and_transfer_data_concurrence(placement_info placement){
       for(int j = 0; j < int(blocks_idx_ptr->size()); j++){
         int idx = (*blocks_idx_ptr)[j];
         if (idx < k){
-          memcpy(data[idx], (*blocks_ptr)[j].data(), cur_block_size);
+          data[idx] = (*blocks_ptr)[j].data();
+          //memcpy(data[idx], (*blocks_ptr)[j].data(), cur_block_size);
         }else{
-          memcpy(coding[idx - k], (*blocks_ptr)[j].data(), cur_block_size);
+          coding[idx - k] = (*blocks_ptr)[j].data();
+          //memcpy(coding[idx - k], (*blocks_ptr)[j].data(), cur_block_size);
         }
 
       }
@@ -379,166 +819,6 @@ void Proxy::decode_and_transfer_data_concurrence(placement_info placement){
 
   std::thread new_thread(decode_and_transfer);
   new_thread.detach();
-}
-
-
-
-
-
-/*并发读取k+cached(1+l)个块*/
-/*先不管read from cache 先复刻代码*/
-void Proxy::decode_and_transfer_data_CACHED(placement_info placement){
-  auto decode_and_transfer = [this, placement]() {
-    std::string object_value;
-    for (auto i = 0; i < placement.stripe_ids.size(); i++) {
-      unsigned int stripe_id = placement.stripe_ids[i];
-      auto blocks_ptr =
-          std::make_shared<std::vector<std::vector<char>>>();
-      auto blocks_idx_ptr =
-          std::make_shared<std::vector<int>>();
-      auto myLock_ptr = 
-          std::make_shared<std::mutex>();
-      auto cv_ptr =
-          std::make_shared<std::condition_variable>();
-      //？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？作用在check_received_block函数
-      int expect_block_number = placement.k;
-      int all_expect_blocks = placement.k + placement.g + placement.real_l;
-      //all_expect_blocks = placement.k;
-
-      std::vector<char *> data_v(placement.k);
-      std::vector<char *> coding_v(all_expect_blocks - placement.k);
-      char **data = (char **)data_v.data();
-      char **coding = (char **)coding_v.data();
-      int k = placement.k;
-      int g = placement.g;
-      int real_l = placement.real_l;
-
-      //////////////getFromNode lamada表达式//////////////////
-      auto getFromNode = [this, k, g, blocks_ptr, blocks_idx_ptr, myLock_ptr, cv_ptr, placement]
-                          (int expect_block_number, int stripe_id_, int block_idx, 
-                           int n_block_size, std::string ip, int port){
-        std::string block_id = std::to_string(stripe_id_ * 1000 + block_idx);
-        std::vector<char> temp(n_block_size);
-        if( block_idx < k + g - 1){
-          read_from_datanode(block_id.c_str(), block_id.size(),
-                            temp.data(), n_block_size, ip.c_str(), port);
-        }else{
-          read_from_cachenode(block_id.c_str(), block_id.size(),
-                              temp.data(), n_block_size, ip.c_str(), port);
-        }
-        
-        myLock_ptr->lock();
-
-        if (!check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
-          /*不满足要求，（blocks_ptr，blocks_idx_ptr）即存储block内容+block_idx的结构再加入本次read_from_datanode的block内容*/
-          blocks_ptr->push_back(temp);
-          blocks_idx_ptr->push_back(block_idx);
-          /*读取后再次检查，若符合要求，唤醒所有等待事件*/
-          if(check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
-            /*满足条件通知等待的线程*/
-            cv_ptr->notify_all();
-          }
-        }
-        myLock_ptr->unlock();
-      };
-
-   
-      
-      /**********************当前blocks大小*******************/
-      size_t cur_block_size;
-      if ((i == placement.stripe_ids.size() - 1) &&
-          placement.tail_block_size != -1) {
-        cur_block_size = placement.tail_block_size;
-      } else {
-        cur_block_size = placement.block_size;
-      }
-      my_assert(cur_block_size > 0);
-
-      /***********解码****************/
-      std::vector<std::vector<char>> space_for_data_blocks(
-          k, std::vector<char>(cur_block_size));
-      std::vector<std::vector<char>> space_for_parity_blocks(
-          all_expect_blocks-k, std::vector<char>(cur_block_size));
-      for(int j = 0; j < k; j++){
-        data[j] = space_for_data_blocks[j].data();
-      }
-      for(int j = 0; j < all_expect_blocks - k; j++){
-        coding[j] = space_for_parity_blocks[j].data();
-      }
-
-      /*****************并发读取all_expect_blocks个数据*******************************/
-      std::vector<std::thread> read_treads;
-      int num_of_blocks_each_stripe =
-          placement.k + placement.g + placement.real_l;
-      for(int j = 0; j < all_expect_blocks; j++){
-          std::pair<std::string, int> ip_and_port_of_datanode =
-                  placement.datanode_ip_port[i * num_of_blocks_each_stripe + j];
-           /*获取cachenode信息*/
-          std::pair<std::string, int> ip_and_port_of_cachenode =
-                  placement.cachenode_ip_port[i * (1 + real_l) + (j - (k + g -1 ))];
-          if( j < k + g - 1 ){
-            read_treads.push_back(std::thread(
-                getFromNode, expect_block_number, stripe_id, j, cur_block_size, 
-                ip_and_port_of_datanode.first, ip_and_port_of_datanode.second));
-          }else{
-            read_treads.push_back(std::thread(
-                getFromNode, expect_block_number, stripe_id, j, cur_block_size, 
-                ip_and_port_of_cachenode.first, ip_and_port_of_cachenode.second));
-          }                 
-      }
-      for(int j = 0; j< all_expect_blocks; j++){
-        read_treads[j].detach();
-      }
-
-      std::unique_lock<std::mutex> lck(*myLock_ptr);
-      
-      /*等待cv_ptr->notify_all();*/
-      while(!check_received_block(k, expect_block_number, blocks_idx_ptr, blocks_ptr->size())){
-        cv_ptr->wait(lck);
-      }
-
-      for(int j = 0; j < int(blocks_idx_ptr->size()); j++){
-        int idx = (*blocks_idx_ptr)[j];
-        if(idx < k){
-          memcpy(data[idx], (*blocks_ptr)[j].data(), cur_block_size);
-        }else{
-          memcpy(coding[idx-k], (*blocks_ptr)[j].data(), cur_block_size);
-        }
-      }
-
-      auto erasures = std::make_shared<std::vector<int>>();
-      for(int j = 0; j < all_expect_blocks; j++){
-        /*find函数返回指向要找到元素的迭代器，没有找到返回last;==end表明没有找到该元素，是erasures*/
-        if(std::find(blocks_idx_ptr->begin(), blocks_idx_ptr->end(), j) == blocks_idx_ptr->end()){
-          erasures->push_back(j);        
-        }
-      }
-      erasures->push_back(-1);
-      decode(k, g, real_l, data, coding, erasures, cur_block_size, true);
-
-      for(int j = 0; j < k; j++){
-        object_value += std::string(data[j], cur_block_size);
-
-      }
-     
-    }
-
-    /*传数据即value信息给client*/
-    asio::ip::tcp::socket peer(io_context_);
-    asio::ip::tcp::endpoint endpoint(
-        asio::ip::make_address(placement.client_ip), placement.client_port);
-    peer.connect(endpoint);
-
-    asio::write(peer, asio::buffer(placement.key, placement.key.size()));
-    asio::write(peer, asio::buffer(object_value, object_value.size()));
-
-    asio::error_code ignore_ec;
-    peer.shutdown(asio::ip::tcp::socket::shutdown_both, ignore_ec);
-    peer.close(ignore_ec);
-  };
-
-  std::thread new_thread(decode_and_transfer);
-  new_thread.detach();
 
   
 }
@@ -550,6 +830,10 @@ void Proxy::decode_and_transfer_data(placement_info placement) {
   auto decode_and_transfer = [this, placement]() {
     std::string object_value;
     for (auto i = 0; i < placement.stripe_ids.size(); i++) {
+      
+      /*测时间0*/
+      //auto start0 = system_clock::now();
+
       unsigned int stripe_id = placement.stripe_ids[i];
       auto blocks_ptr =
           std::make_shared<std::unordered_map<int, std::string>>();
@@ -568,6 +852,10 @@ void Proxy::decode_and_transfer_data(placement_info placement) {
       int num_of_blocks_each_stripe =
           placement.k + placement.g + placement.real_l;
       std::vector<std::thread> readers;
+
+      /*测时间1*/
+      //auto read_start1 = system_clock::now();
+
       for (int j = 0; j < num_of_datanodes_involved; j++) {
         std::pair<std::string, int> ip_and_port_of_datanode =
             placement.datanode_ip_port[i * num_of_blocks_each_stripe + j];
@@ -591,12 +879,32 @@ void Proxy::decode_and_transfer_data(placement_info placement) {
       for (auto j = 0; j < readers.size(); j++) {
         readers[j].join();
       }
+      
+      /*测时间2*/      
+      //auto read_end2 = system_clock::now();
 
       my_assert(blocks_ptr->size() == num_of_datanodes_involved);
 
       for (int j = 0; j < placement.k; j++) {
         object_value += (*blocks_ptr)[j];
       }
+
+      /*测时间3*
+      /*      
+      auto decode3 = system_clock::now();
+      auto read_duration0 = duration_cast<microseconds>(read_start1 - start0);
+      auto read_duration1 = duration_cast<microseconds>(read_end2 - read_start1);
+      auto read_duration2 = duration_cast<microseconds>(decode3 - read_end2);
+      auto read_duration3 = duration_cast<microseconds>(decode3 - start0);
+      double read_time_cost0 = double(read_duration0.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost1 = double(read_duration1.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost2 = double(read_duration2.count()) * microseconds::period::num / microseconds::period::den;
+      double read_time_cost3 = double(read_duration3.count()) * microseconds::period::num / microseconds::period::den;
+      string test_result_file = "/home/chenximeng/cacheproject/record0.log";
+      ofstream fout(test_result_file, std::ios::app);
+      fout << std::endl;
+      fout <<  "read_duration0 " << read_time_cost0 << "秒" << " " <<  "read_duration1 " << read_time_cost1 << "秒" << " " <<  "read_duration2 " << read_time_cost2 << "秒" << " " <<  "read_duration3 " << read_time_cost3 << "秒" << std::endl;
+      */
     }
 
     /*传数据即value信息给client*/
@@ -801,8 +1109,9 @@ void Proxy::main_repair(main_repair_plan repair_plan) {
       std::string block_id =
           std::to_string(repair_plan.stripe_id * 1000 + block_index);
       size_t temp_size;
-      /*read_from_datanode(block_id.c_str(), block_id.size(), block_buf.data(),
-                         repair_plan.block_size, ip.c_str(), port);*/
+      read_from_datanode(block_id.c_str(), block_id.size(), block_buf.data(),
+                         repair_plan.block_size, ip.c_str(), port);
+      /*
       if(block_index < k + g -1){
         read_from_datanode(block_id.c_str(), block_id.size(), block_buf.data(),
                          repair_plan.block_size, ip.c_str(), port);
@@ -810,6 +1119,8 @@ void Proxy::main_repair(main_repair_plan repair_plan) {
         read_from_cachenode(block_id.c_str(), block_id.size(), block_buf.data(),
                          repair_plan.block_size, ip.c_str(), port);
       }
+      */
+      
       mutex_.lock();
       blocks[repair_plan.cluster_id][block_index] = block_buf;
       mutex_.unlock();
@@ -1021,8 +1332,9 @@ void Proxy::help_repair(help_repair_plan repair_plan) {
       std::string block_id =
           std::to_string(repair_plan.stripe_id * 1000 + block_idx);
       size_t temp_size;
-      /*read_from_datanode(block_id.c_str(), block_id.size(), buf.data(),
-                         repair_plan.block_size, ip.c_str(), port);*/
+      read_from_datanode(block_id.c_str(), block_id.size(), buf.data(),
+                         repair_plan.block_size, ip.c_str(), port);
+      /*
       if(block_idx < k + g -1){
         read_from_datanode(block_id.c_str(), block_id.size(), buf.data(),
                          repair_plan.block_size, ip.c_str(), port);
@@ -1030,6 +1342,7 @@ void Proxy::help_repair(help_repair_plan repair_plan) {
         read_from_cachenode(block_id.c_str(), block_id.size(), buf.data(),
                          repair_plan.block_size, ip.c_str(), port);
       }
+      */
       mutex_.lock();
       blocks[repair_plan.cluster_id][block_idx] = buf;
       mutex_.unlock();
